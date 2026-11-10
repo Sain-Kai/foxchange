@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { findAllCycles, runBellmanFord } from "../bellman-ford";
 import { buildGraph } from "../graph";
+import { PRESETS } from "../presets";
 
 // Graph with a known 8% arbitrage: USD→EUR→GBP→USD
 // 0.9 * 0.8 * 1.5 = 1.08
@@ -101,8 +102,31 @@ describe("findAllCycles", () => {
   it("sorts cycles by profit descending", () => {
     const graph = buildGraph(arbitrageRates);
     const cycles = findAllCycles(graph);
-    for (let i = 1; i < cycles.length; i++) {
-      expect(cycles[i - 1].profitPct).toBeGreaterThanOrEqual(cycles[i].profitPct);
+    for (let i = 0; i < cycles.length - 1; i++) {
+      expect(cycles[i].profitPct).toBeGreaterThanOrEqual(cycles[i + 1].profitPct);
     }
+  });
+});
+
+describe("VIT Research Paper Benchmark & Presets", () => {
+  it("detects the 1.992% cycle from the paper", () => {
+    const paperGraph = PRESETS.triangle.graph;
+    const cycles = findAllCycles(paperGraph);
+    expect(cycles.length).toBe(1);
+    expect(cycles[0].id).toBe("EUR>GBP>USD");
+    expect(cycles[0].profitPct).toBeCloseTo(1.992, 2);
+  });
+
+  it("fee-trap preset: profitable with 0 fee, eliminated with 0.1% fee", () => {
+    const zeroFeeGraph = PRESETS.feeTrap.graph;
+    const zeroFeeCycles = findAllCycles(zeroFeeGraph);
+    expect(zeroFeeCycles.length).toBeGreaterThan(0);
+    expect(zeroFeeCycles[0].profitPct).toBeGreaterThan(0);
+
+    // Now test with 0.1% fee (0.001)
+    const withFeeGraph = buildGraph(PRESETS.feeTrap.rates, 0.001);
+    const withFeeCycles = findAllCycles(withFeeGraph);
+    // At 0.1% per hop over 3 hops (0.3% fee), the 0.22% gross profit becomes negative!
+    expect(withFeeCycles.length).toBe(0);
   });
 });
