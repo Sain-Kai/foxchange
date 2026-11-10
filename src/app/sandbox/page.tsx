@@ -12,9 +12,10 @@ import { GraphControls } from "@/components/GraphControls";
 import { StepNarrator } from "@/components/StepNarrator";
 import { useAnimationPlayer } from "@/hooks/useAnimationPlayer";
 import { PRESETS, type PresetKey } from "@/lib/presets";
+import { buildGraph } from "@/lib/graph";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Play, FlaskConical, Download, CircleDot, Pencil } from "lucide-react";
+import { Play, FlaskConical, Download, CircleDot, Pencil, Percent, Coins } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_PRESET: PresetKey = "triangle";
@@ -23,8 +24,9 @@ const DEFAULT_SOURCE = DEFAULT_GRAPH.nodes[0] ?? "USD";
 
 export default function SandboxPage() {
   const [graph, setGraph] = useState<Graph>(DEFAULT_GRAPH);
-  const [activePreset, setActivePreset] = useState<PresetKey>(DEFAULT_PRESET);
+  const [activePreset, setActivePreset] = useState<PresetKey | "custom">(DEFAULT_PRESET);
   const [source, setSource] = useState<string>(DEFAULT_SOURCE);
+  const [feePct, setFeePct] = useState<number>(0);
   const [steps, setSteps] = useState(
     runBellmanFord(DEFAULT_GRAPH, DEFAULT_SOURCE, { instrument: true }).steps
   );
@@ -57,39 +59,56 @@ export default function SandboxPage() {
 
   function loadPreset(key: PresetKey) {
     const p = PRESETS[key];
-    setGraph(p.graph);
+    const feeFraction = feePct / 100;
+    const g = buildGraph(p.rates, feeFraction);
+    setGraph(g);
     setActivePreset(key);
-    const firstNode = p.graph.nodes[0] ?? "A";
+    const firstNode = g.nodes[0] ?? "USD";
     setSource(firstNode);
-    const result = runBellmanFord(p.graph, firstNode, { instrument: true });
+    const result = runBellmanFord(g, firstNode, { instrument: true });
     setSteps(result.steps);
-    const all = findAllCycles(p.graph);
+    const all = findAllCycles(g);
     setCycles(all);
     setSelectedCycleId(all[0]?.id ?? null);
     setHasRun(true);
   }
 
-  async function loadLiveRates() {
+  async function loadLiveRates(market: "fiat" | "crypto" = "fiat") {
     try {
-      const res = await fetch("/api/rates");
+      const res = await fetch(`/api/rates?market=${market}`);
       const data = await res.json();
-      const g = await import("@/lib/graph").then((m) => m.buildGraph(data.rates));
+      const feeFraction = feePct / 100;
+      const g = buildGraph(data.rates, feeFraction);
       setGraph(g);
-      setActivePreset("textbook");
-      const firstNode = g.nodes[0];
+      setActivePreset("custom");
+      const firstNode = g.nodes[0] ?? (market === "crypto" ? "USDT" : "USD");
       setSource(firstNode);
-      setHasRun(false);
-      setCycles([]);
-      setSteps([]);
+      const result = runBellmanFord(g, firstNode, { instrument: true });
+      setSteps(result.steps);
+      const all = findAllCycles(g);
+      setCycles(all);
+      setSelectedCycleId(all[0]?.id ?? null);
+      setHasRun(true);
     } catch (e) {
       console.error("Failed to load live rates:", e);
     }
   }
 
   function runBF() {
-    const result = runBellmanFord(graph, source, { instrument: true });
+    // Rebuild graph with fee
+    const feeFraction = feePct / 100;
+    // Extract rate matrix from current graph edges
+    const matrix: Record<string, Record<string, number>> = {};
+    for (const e of graph.edges) {
+      if (!matrix[e.from]) matrix[e.from] = {};
+      matrix[e.from][e.to] = e.rawRate;
+    }
+    const updatedGraph = buildGraph(matrix, feeFraction);
+    setGraph(updatedGraph);
+
+    const result = runBellmanFord(updatedGraph, source, { instrument: true });
     setSteps(result.steps);
-    const all = findAllCycles(graph);
+    const all = findAllCycles(updatedGraph);
     setCycles(all);
     setSelectedCycleId(all[0]?.id ?? null);
     setHasRun(true);
@@ -97,6 +116,7 @@ export default function SandboxPage() {
 
   const handleGraphChange = useCallback((newGraph: Graph) => {
     setGraph(newGraph);
+    setActivePreset("custom");
     setHasRun(false);
     setCycles([]);
     setSteps([]);
@@ -109,26 +129,26 @@ export default function SandboxPage() {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <div className="flex items-center gap-2">
-              <FlaskConical className="w-5 h-5 text-foreground" />
-              <h1 className="text-xl font-bold tracking-tight">Sandbox</h1>
+              <FlaskConical className="w-5 h-5 text-amber-400" />
+              <h1 className="text-xl font-bold tracking-tight">FoxChange Sandbox & Presets</h1>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Build a custom currency graph, then run Bellman-Ford to detect arbitrage cycles.
+            <p className="text-xs text-muted-foreground mt-1 max-w-xl">
+              Build and customize currency exchange networks, configure per-hop trading fees, and observe step-by-step Bellman-Ford negative cycle relaxation.
             </p>
           </div>
         </div>
 
-        {/* Presets row */}
+        {/* Presets and Live Import Row */}
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-xs text-muted-foreground mr-1">Start with:</span>
+          <span className="text-xs text-muted-foreground mr-1">Presets:</span>
           {(Object.keys(PRESETS) as PresetKey[]).map((key) => (
             <button
               key={key}
               onClick={() => loadPreset(key)}
               className={cn(
-                "px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border",
+                "px-2.5 py-1 rounded-lg text-xs font-medium transition-colors border",
                 activePreset === key
-                  ? "bg-muted border-border text-foreground"
+                  ? "bg-muted border-amber-500/50 text-foreground font-semibold shadow-sm"
                   : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50"
               )}
             >
@@ -136,65 +156,108 @@ export default function SandboxPage() {
             </button>
           ))}
           <div className="w-px h-5 bg-border mx-1" />
-          <Button variant="outline" size="sm" onClick={loadLiveRates} className="gap-1.5 h-7 text-xs">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => loadLiveRates("fiat")}
+            className="gap-1.5 h-7 text-xs"
+          >
             <Download className="w-3 h-3" />
-            Live Rates
+            Live Fiat (ECB)
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => loadLiveRates("crypto")}
+            className="gap-1.5 h-7 text-xs text-amber-400 border-amber-500/30"
+          >
+            <Coins className="w-3 h-3" />
+            Live Crypto (Binance)
           </Button>
         </div>
       </div>
 
       {/* Main layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)] gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)] gap-5">
         {/* Left column: Editor + Run + Results */}
         <div className="space-y-4 min-w-0">
           {/* Step 1: Edit */}
           <div className="rounded-xl border border-border bg-card overflow-hidden">
-            <div className="px-4 py-2.5 border-b border-border flex items-center gap-2">
-              <span className="w-5 h-5 rounded-md bg-muted text-[10px] font-mono flex items-center justify-center text-muted-foreground">1</span>
-              <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
-              <h2 className="text-xs font-semibold">Edit graph</h2>
+            <div className="px-4 py-2.5 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-5 h-5 rounded-md bg-muted text-[10px] font-mono flex items-center justify-center text-muted-foreground">1</span>
+                <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
+                <h2 className="text-xs font-semibold">Graph Rates Editor</h2>
+              </div>
             </div>
             <div className="p-4">
               <SandboxEditor
                 key={activePreset}
                 onGraphChange={handleGraphChange}
                 initialRates={
-                  (activePreset && PRESETS[activePreset as PresetKey]?.rates) || {}
+                  activePreset !== "custom" && PRESETS[activePreset as PresetKey]
+                    ? PRESETS[activePreset as PresetKey].rates
+                    : undefined
                 }
               />
             </div>
           </div>
 
-          {/* Step 2: Run */}
+          {/* Step 2: Configure & Run */}
           <div className="rounded-xl border border-border bg-card overflow-hidden">
             <div className="px-4 py-2.5 border-b border-border flex items-center gap-2">
               <span className="w-5 h-5 rounded-md bg-muted text-[10px] font-mono flex items-center justify-center text-muted-foreground">2</span>
               <Play className="w-3.5 h-3.5 text-muted-foreground" />
-              <h2 className="text-xs font-semibold">Run algorithm</h2>
+              <h2 className="text-xs font-semibold">Algorithm Parameters</h2>
             </div>
             <div className="p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-muted-foreground">Source</label>
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-xs text-muted-foreground">Source Node</label>
                 <select
                   value={source}
                   onChange={(e) => setSource(e.target.value)}
-                  className="ml-auto bg-muted border border-border rounded-lg px-2.5 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring/50"
+                  className="bg-muted border border-border rounded-lg px-2.5 py-1 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-ring/50"
                 >
                   {graph.nodes.map((n) => (
                     <option key={n} value={n}>{n}</option>
                   ))}
                 </select>
               </div>
+
+              {/* Per-hop fee setting */}
+              <div className="flex items-center justify-between gap-2 border-t border-border/40 pt-2.5">
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Percent className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Per-Hop Fee</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {[0, 0.05, 0.1, 0.2].map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setFeePct(f)}
+                      className={`px-1.5 py-0.5 text-[10px] rounded font-mono ${
+                        feePct === f
+                          ? "bg-amber-500/20 text-amber-400 border border-amber-500/40"
+                          : "bg-muted text-muted-foreground"
+                      }`}
+                    >
+                      {f}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <Button
                 onClick={runBF}
-                className="w-full gap-2 h-9 text-sm"
+                className="w-full gap-2 h-9 text-sm bg-amber-500 hover:bg-amber-600 text-black font-semibold mt-2"
                 disabled={graph.nodes.length === 0}
               >
                 <Play className="w-3.5 h-3.5" /> Run Bellman-Ford
               </Button>
               {!hasRun && graph.nodes.length > 0 && (
                 <p className="text-[11px] text-muted-foreground text-center">
-                  Graph changed — run again to detect cycles.
+                  Graph changed — click Run to detect cycles.
                 </p>
               )}
             </div>
@@ -206,7 +269,7 @@ export default function SandboxPage() {
               <div className="px-4 py-2.5 border-b border-border flex items-center gap-2">
                 <span className="w-5 h-5 rounded-md bg-muted text-[10px] font-mono flex items-center justify-center text-muted-foreground">3</span>
                 <CircleDot className="w-3.5 h-3.5 text-muted-foreground" />
-                <h2 className="text-xs font-semibold">Cycles found</h2>
+                <h2 className="text-xs font-semibold">Cycles Detected</h2>
                 <Badge
                   variant="outline"
                   className={cn(
@@ -220,7 +283,7 @@ export default function SandboxPage() {
               <div className="p-4 space-y-2">
                 {cycles.length === 0 && (
                   <p className="text-xs text-muted-foreground py-2 text-center">
-                    No arbitrage in this graph.
+                    No negative cycle found. Graph satisfies triangular parity.
                   </p>
                 )}
                 {cycles.map((c) => (
@@ -234,7 +297,7 @@ export default function SandboxPage() {
                 ))}
                 {cycles.length > 0 && (
                   <p className="text-[11px] text-muted-foreground/80 pt-1 leading-relaxed">
-                    Try editing a rate above and re-running — small changes can erase the cycle.
+                    Select a cycle to view on the force-directed graph.
                   </p>
                 )}
               </div>
@@ -246,7 +309,7 @@ export default function SandboxPage() {
         <div className="space-y-4 min-w-0">
           <div
             ref={graphContainerRef}
-            className="rounded-xl border border-border overflow-hidden graph-container dot-grid min-h-[440px]"
+            className="rounded-xl border border-border overflow-hidden graph-container dot-grid min-h-[440px] bg-card"
           >
             <CurrencyGraph
               graph={graph}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { ArrowLeft, AlertTriangle, Cpu } from "lucide-react";
 import type { BFStep, CycleResult, Graph } from "@/types/graph";
 import { useAnimationPlayer } from "@/hooks/useAnimationPlayer";
@@ -26,12 +27,16 @@ interface Props {
 }
 
 export function CycleDetailView({ cycleId }: Props) {
+  const searchParams = useSearchParams();
   const [data, setData] = useState<CycleData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`/api/scan/${encodeURIComponent(cycleId)}`)
+    const query = searchParams.toString();
+    const url = `/api/scan/${encodeURIComponent(cycleId)}${query ? `?${query}` : ""}`;
+
+    fetch(url)
       .then((r) => r.json())
       .then((d) => {
         if (d.error) throw new Error(d.error);
@@ -39,7 +44,7 @@ export function CycleDetailView({ cycleId }: Props) {
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, [cycleId]);
+  }, [cycleId, searchParams]);
 
   const player = useAnimationPlayer(data?.steps ?? []);
 
@@ -54,7 +59,7 @@ export function CycleDetailView({ cycleId }: Props) {
           </div>
           <div className="space-y-4">
             {[200, 260, 220].map((h, i) => (
-              <div key={i} className={`bg-muted/30 rounded-2xl shimmer`} style={{ height: h }} />
+              <div key={i} className="bg-muted/30 rounded-2xl shimmer" style={{ height: h }} />
             ))}
           </div>
         </div>
@@ -95,9 +100,9 @@ export function CycleDetailView({ cycleId }: Props) {
             <Cpu className="w-4 h-4 text-amber-400" />
           </div>
           <div>
-            <h1 className="text-lg font-bold leading-none">Cycle Analysis</h1>
+            <h1 className="text-lg font-bold leading-none">Bellman-Ford Cycle Analysis</h1>
             <p className="text-[11px] text-muted-foreground mt-0.5 font-mono">
-              BF source: {data.source}
+              Source node: {data.source} | Detected cycle: {data.cycle.path.join(" → ")}
             </p>
           </div>
         </div>
@@ -106,9 +111,9 @@ export function CycleDetailView({ cycleId }: Props) {
       {/* Explainer banner */}
       <div className="rounded-xl bg-muted/30 border border-border/60 px-5 py-3.5 text-sm text-muted-foreground leading-relaxed">
         <span className="font-medium text-foreground">What you&apos;re seeing:</span>{" "}
-        Bellman-Ford relaxes every edge V-1 times, updating shortest distances. On the V-th pass,
-        any edge that <em>still</em> relaxes reveals a negative cycle — that&apos;s the arbitrage.
-        Use the playback controls below to step through each relaxation and watch distances converge.
+        Bellman-Ford relaxes every edge |V|-1 times, updating shortest distances. On the V-th pass,
+        an edge that <em>still relaxes</em> reveals a negative weight cycle — signifying an arbitrage loop.
+        Step through with playback controls to watch distances evolve.
       </div>
 
       {/* Main layout */}
@@ -155,7 +160,7 @@ export function CycleDetailView({ cycleId }: Props) {
 
           <div className="rounded-xl bg-muted/20 border border-border/50 px-4 py-3">
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              <span className="font-semibold text-foreground">Iteration Table</span> — Each row shows the distances from the source after processing one edge. Green cells indicate a successful relaxation (shorter path found). The convergence plot below tracks how each node&apos;s distance evolves across all iterations.
+              <span className="font-semibold text-foreground">Iteration Table</span> — Each row shows the distances from the source after processing one edge. Green cells indicate a successful relaxation. The convergence plot below tracks distance trajectories.
             </p>
           </div>
 
